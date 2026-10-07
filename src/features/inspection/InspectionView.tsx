@@ -1,5 +1,5 @@
 import type { BusinessRule, RuleAnalysis, RuleProject, RuleVersion, SampleInput } from '../../models/ruleModel';
-import type { WorkspaceState } from '../../viewmodels/workspaceViewModel';
+import type { CheckProgress, WorkspaceState } from '../../viewmodels/workspaceViewModel';
 import type { InspectionViewModel } from './inspectionViewModel';
 
 interface InspectionViewProps { state: WorkspaceState; viewModel: InspectionViewModel; onOpenRule: (ruleId: string) => void }
@@ -19,7 +19,8 @@ export function InspectionView({ state, viewModel, onOpenRule }: InspectionViewP
 
       {state.validationIssues.length > 0 && <div className="validation-banner"><strong>规则暂时无法检查</strong><span>{state.validationIssues[0].message}</span><button className="text-button" onClick={() => state.validationIssues[0].ruleId ? onOpenRule(state.validationIssues[0].ruleId) : undefined}>{state.validationIssues[0].ruleId ? '打开相关规则 →' : '修复项目定义'}</button></div>}
       {state.checkStatus === 'error' && !state.validationIssues.length && <div className="error-banner">检查失败：{state.notice}</div>}
-      {!analysis && !state.validationIssues.length && <div className="loading-analysis card-surface"><div className={isChecking ? 'spinner' : 'analysis-orb'}>{isChecking ? '' : '✳'}</div><div><strong>{isChecking ? '正在分析条件空间' : '准备检查规则集合'}</strong><p>{isChecking ? '计算在独立工作线程中运行，可随时取消。' : '点击“运行一致性检查”查看覆盖与规则关系。'}</p></div>{state.checkStatus === 'success' && <span className="success-mark">✓</span>}</div>}
+      {state.checkStatus === 'cancelled' && <div className="cancelled-banner">检查已取消，已处理的分区已保存，下次运行会自动续算。</div>}
+      {!analysis && !state.validationIssues.length && (isChecking ? <ProgressPanel progress={state.progress} /> : <div className="loading-analysis card-surface"><div className="analysis-orb">✳</div><div><strong>准备检查规则集合</strong><p>点击“运行一致性检查”查看覆盖与规则关系。</p></div>{state.checkStatus === 'success' && <span className="success-mark">✓</span>}</div>)}
       {analysis && <AnalysisPanel analysis={analysis} project={project as RuleProject} byId={byId} onOpenRule={onOpenRule} />}
 
       <section className="versions-section">
@@ -31,6 +32,39 @@ export function InspectionView({ state, viewModel, onOpenRule }: InspectionViewP
 }
 
 interface AnalysisPanelProps { analysis: RuleAnalysis; project: RuleProject; byId: Map<string, BusinessRule>; onOpenRule: (ruleId: string) => void }
+
+function ProgressPanel({ progress }: { progress: CheckProgress | null }) {
+  const percent = progress?.percent ?? 0;
+  const processed = progress?.processed ?? 0;
+  const total = progress?.total ?? 0;
+  const stageLabel = progress?.stageLabel;
+  const resumed = progress?.resumed ?? false;
+  const truncated = progress?.truncated ?? false;
+  return (
+    <div className="progress-panel card-surface" role="status" aria-live="polite">
+      <div className="progress-head">
+        <div className="spinner" />
+        <div className="progress-copy">
+          <strong>{resumed ? '从上次中断处继续分析条件空间' : '正在分析条件空间'}</strong>
+          <p>
+            {total > 0
+              ? <>已处理 <b>{processed.toLocaleString('zh-CN')}</b> / {total.toLocaleString('zh-CN')} 个代表分区
+                {stageLabel && <> · 当前维度「{stageLabel}」第 {progress?.stageSegment ?? 1} / {progress?.stageTotal ?? 1} 段</>}
+              </>
+              : '正在生成字段取值组合…'}
+          </p>
+        </div>
+        <span className="progress-percent">{percent}%</span>
+      </div>
+      <div className="progress-track" aria-label={`检查进度 ${percent}%`}><span style={{ width: `${percent}%` }} /></div>
+      <div className="progress-foot">
+        <span>{resumed ? '↻ 已恢复上次进度，结论与一次跑完完全一致' : '计算在独立工作线程中分块执行，可随时取消并续算'}</span>
+        {truncated && <span>输入组合超过上限，将分析前 {total.toLocaleString('zh-CN')} 个分区</span>}
+      </div>
+    </div>
+  );
+}
+
 
 function AnalysisPanel({ analysis, project, byId, onOpenRule }: AnalysisPanelProps) {
   const conflictCount = analysis.overlaps.filter((overlap) => overlap.conflict).length;

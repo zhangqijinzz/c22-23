@@ -1,5 +1,6 @@
 import { evaluateSample } from '../domain/conditionEvaluator';
 import { ruleDomain } from '../domain/ruleDomain';
+import type { AnalysisProgress } from '../domain/ruleAnalysis';
 import type {
   ModuleId,
   RuleAnalysis,
@@ -16,6 +17,9 @@ import type { WorkspacePort } from './workspacePort';
 export type WorkspacePhase = 'loading' | 'editing' | 'validating' | 'checking' | 'ready' | 'error';
 export type CheckStatus = 'idle' | 'scheduled' | 'checking' | 'success' | 'error' | 'cancelled';
 
+/** 检查进度快照；仅在 checkStatus 为 checking/scheduled 时有效。 */
+export type CheckProgress = AnalysisProgress;
+
 export interface WorkspaceState {
   phase: WorkspacePhase;
   persistence: 'idle' | 'saving' | 'saved' | 'error';
@@ -23,6 +27,7 @@ export interface WorkspaceState {
   project: RuleProject | null;
   activeModule: ModuleId;
   checkStatus: CheckStatus;
+  progress: CheckProgress | null;
   analysis: RuleAnalysis | null;
   validationIssues: ReturnType<typeof ruleDomain.validateProject>;
   sampleEvaluation: SampleEvaluation | null;
@@ -34,11 +39,10 @@ export interface WorkspaceState {
 type Listener = () => void;
 type WorkspaceRepository = Pick<RuleRepository, 'load' | 'save'>;
 type Checker = Pick<RuleCheckService, 'run'>;
-
 export class RuleWorkspaceViewModel implements WorkspacePort {
   private state: WorkspaceState = {
     phase: 'loading', persistence: 'idle', workspace: null, project: null,
-    activeModule: 'inspection', checkStatus: 'idle', analysis: null,
+    activeModule: 'inspection', checkStatus: 'idle', progress: null, analysis: null,
     validationIssues: [], sampleEvaluation: null, notice: '正在恢复本地规则项目…',
   };
   private readonly listeners = new Set<Listener>();
@@ -118,39 +122,55 @@ export class RuleWorkspaceViewModel implements WorkspacePort {
     this.checkTimer = undefined;
     const issues = ruleDomain.validateProject(project);
     if (issues.length) {
-      this.publish({ ...this.state, phase: 'validating', checkStatus: 'error', validationIssues: issues, notice: issues[0].message });
+      this.publish({ ...this.state, phase: 'validating', checkStatus: 'error', progress: null, validationIssues: issues, notice: issues[0].message });
       return;
     }
     this.checkOperation?.cancel();
     const revision = ++this.checkRevision;
-    this.publish({ ...this.state, phase: 'checking', checkStatus: 'checking', notice: '正在工作线程中枚举输入空间…' });
+    this.publish({ ...this.state, phase: 'checking', checkStatus: 'checking', progress: null, notice: '正在工作线程中枚举输入空间…' });
     try {
       const operation = this.checker.run(project);
       this.checkOperation = operation;
+      operation.onProgress((nextProgress) => {
+        // 过期请求（已取消/被新检查取代）的进度直接丢弃。
+        if (revision !== this.checkRevision) return;
+        this.publish({ ...this.state, progress: nextProgress });
+      });
       const analysis = await operation.promise;
       if (revision !== this.checkRevision) return;
       this.checkOperation = undefined;
-      this.publish({ ...this.state, phase: 'ready', checkStatus: 'success', analysis, notice: `检查完成：已分析 ${analysis.checkedCases.toLocaleString('zh-CN')} 个逻辑分区` });
+      this.publish({
+        ...this.state,
+        phase: 'ready',
+        checkStatus: 'success',
+        progress: null,
+        analysis,
+        notice: `检查完成：已分析 ${analysis.checkedCases.toLocaleString('zh-CN')} 个逻辑分区`,
+      });
     } catch (error) {
       if (revision !== this.checkRevision) return;
       this.checkOperation = undefined;
       if (error instanceof DOMException && error.name === 'AbortError') {
-        this.publish({ ...this.state, phase: 'editing', checkStatus: 'cancelled', notice: '检查已取消' });
+        // notice 由取消入口（cancelCheck）写好，这里只固化状态，避免覆盖续算提示。
+        this.publish({ ...this.state, phase: 'editing', checkStatus: 'cancelled', progress: null });
       } else {
         const message = error instanceof Error ? error.message : '规则检查失败';
-        this.publish({ ...this.state, phase: 'error', checkStatus: 'error', notice: message });
+        this.publish({ ...this.state, phase: 'error', checkStatus: 'error', progress: null, notice: message });
       }
     }
   }
 
   cancelCheck(): void {
+    const wasActive = this.state.checkStatus === 'checking' || this.state.checkStatus === 'scheduled';
+    const processed = this.state.progress?.processed ?? 0;
     if (this.checkTimer) clearTimeout(this.checkTimer);
     this.checkTimer = undefined;
     this.checkRevision += 1;
     this.checkOperation?.cancel();
     this.checkOperation = undefined;
-    if (this.state.checkStatus === 'checking' || this.state.checkStatus === 'scheduled') {
-      this.publish({ ...this.state, phase: 'editing', checkStatus: 'cancelled', notice: '检查已取消' });
+    if (wasActive) {
+      const resumeHint = processed > 0 ? `，下次检查将从已完成的 ${processed.toLocaleString('zh-CN')} 个分区继续` : '';
+      this.publish({ ...this.state, phase: 'editing', checkStatus: 'cancelled', progress: null, notice: `检查已取消${resumeHint}` });
     }
   }
 
@@ -159,7 +179,7 @@ export class RuleWorkspaceViewModel implements WorkspacePort {
     if (!workspace) return;
     const project = createBlankProject(workspace.projects.length + 1);
     const next: WorkspaceDocument = { ...workspace, projects: [...workspace.projects, project], activeProjectId: project.id };
-    this.publish({ ...this.state, workspace: next, project, phase: 'validating', activeModule: 'fields', analysis: null, checkStatus: 'idle', validationIssues: ruleDomain.validateProject(project), sampleEvaluation: evaluateSample(project, project.sampleInputs), selectedRuleId: undefined, notice: '空项目已创建。先定义字段，再添加规则。' });
+    this.publish({ ...this.state, workspace: next, project, phase: 'validating', activeModule: 'fields', progress: null, analysis: null, checkStatus: 'idle', validationIssues: ruleDomain.validateProject(project), sampleEvaluation: evaluateSample(project, project.sampleInputs), selectedRuleId: undefined, notice: '空项目已创建。先定义字段，再添加规则。' });
     this.scheduleSave(next);
   }
 
@@ -170,7 +190,7 @@ export class RuleWorkspaceViewModel implements WorkspacePort {
     this.cancelCheck();
     const next = { ...workspace, activeProjectId: projectId };
     const issues = ruleDomain.validateProject(project);
-    this.publish({ ...this.state, workspace: next, project, phase: issues.length ? 'validating' : 'editing', activeModule: 'inspection', checkStatus: issues.length ? 'idle' : 'scheduled', analysis: null, validationIssues: issues, sampleEvaluation: evaluateSample(project, project.sampleInputs), selectedRuleId: project.rules[0]?.id, notice: `已切换到“${project.title}”` });
+    this.publish({ ...this.state, workspace: next, project, phase: issues.length ? 'validating' : 'editing', activeModule: 'inspection', progress: null, checkStatus: issues.length ? 'idle' : 'scheduled', analysis: null, validationIssues: issues, sampleEvaluation: evaluateSample(project, project.sampleInputs), selectedRuleId: project.rules[0]?.id, notice: `已切换到“${project.title}”` });
     this.scheduleSave(next);
     if (!issues.length) this.scheduleCheck(80);
   }
@@ -209,7 +229,7 @@ export class RuleWorkspaceViewModel implements WorkspacePort {
     };
     const next = { ...workspace, projects: [...workspace.projects, project], activeProjectId: project.id };
     const issues = ruleDomain.validateProject(project);
-    this.publish({ ...this.state, workspace: next, project, phase: issues.length ? 'validating' : 'editing', activeModule: 'rules', checkStatus: issues.length ? 'idle' : 'scheduled', analysis: null, validationIssues: issues, sampleEvaluation: evaluateSample(project, project.sampleInputs), selectedRuleId: project.rules[0]?.id, notice: `已复制版本到项目“${project.title}”` });
+    this.publish({ ...this.state, workspace: next, project, phase: issues.length ? 'validating' : 'editing', activeModule: 'rules', progress: null, checkStatus: issues.length ? 'idle' : 'scheduled', analysis: null, validationIssues: issues, sampleEvaluation: evaluateSample(project, project.sampleInputs), selectedRuleId: project.rules[0]?.id, notice: `已复制版本到项目“${project.title}”` });
     this.scheduleSave(next);
     if (!issues.length) this.scheduleCheck(80);
   }
@@ -221,7 +241,7 @@ export class RuleWorkspaceViewModel implements WorkspacePort {
       const workspace = saved ?? createDemoWorkspace();
       const project = workspace.projects.find((candidate) => candidate.id === workspace.activeProjectId) ?? workspace.projects[0];
       const issues = ruleDomain.validateProject(project);
-      this.publish({ ...this.state, workspace, project, phase: issues.length ? 'validating' : 'editing', persistence: saved ? 'saved' : 'saving', activeModule: 'inspection', checkStatus: issues.length ? 'idle' : 'scheduled', validationIssues: issues, analysis: null, sampleEvaluation: evaluateSample(project, project.sampleInputs), selectedRuleId: project.rules[0]?.id, notice: saved ? '已从本地恢复最近项目' : '已载入演示项目，可直接修改并检查规则' });
+      this.publish({ ...this.state, workspace, project, phase: issues.length ? 'validating' : 'editing', persistence: saved ? 'saved' : 'saving', activeModule: 'inspection', progress: null, checkStatus: issues.length ? 'idle' : 'scheduled', validationIssues: issues, analysis: null, sampleEvaluation: evaluateSample(project, project.sampleInputs), selectedRuleId: project.rules[0]?.id, notice: saved ? '已从本地恢复最近项目' : '已载入演示项目，可直接修改并检查规则' });
       if (saved) this.scheduleCheck(40);
       else {
         this.scheduleSave(workspace);
@@ -246,6 +266,7 @@ export class RuleWorkspaceViewModel implements WorkspacePort {
       ...this.state, workspace: next, project: updated,
       phase: issues.length ? 'validating' : 'editing', validationIssues: issues,
       checkStatus: issues.length ? 'idle' : recheck ? 'scheduled' : this.state.checkStatus,
+      progress: recheck || issues.length ? null : this.state.progress,
       analysis: recheck ? null : this.state.analysis,
       sampleEvaluation: evaluateSample(updated, updated.sampleInputs),
       selectedRuleId: updated.rules.some((rule) => rule.id === this.state.selectedRuleId) ? this.state.selectedRuleId : updated.rules[0]?.id,

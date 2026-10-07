@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { analyzeRules } from '../domain/ruleAnalysis';
+import { analyzeRules, type AnalysisProgress } from '../domain/ruleAnalysis';
 import type { RuleProject, WorkspaceDocument } from '../models/ruleModel';
 import type { CheckOperation } from '../services/ruleCheckService';
 import { RuleWorkspaceViewModel } from '../viewmodels/workspaceViewModel';
@@ -20,9 +20,9 @@ class FakeChecker {
     if (this.nextError) {
       const error = this.nextError;
       this.nextError = null;
-      return { promise: Promise.reject(error), cancel: () => { this.cancelled = true; } };
+      return { promise: Promise.reject(error), cancel: () => { this.cancelled = true; }, onProgress: () => undefined };
     }
-    return { promise: Promise.resolve(analyzeRules(project)), cancel: () => { this.cancelled = true; } };
+    return { promise: Promise.resolve(analyzeRules(project)), cancel: () => { this.cancelled = true; }, onProgress: () => undefined };
   }
 }
 
@@ -102,3 +102,75 @@ describe('RuleWorkspaceViewModel', () => {
     workspace.dispose();
   });
 });
+
+class ControllableChecker {
+  last?: {
+    resolve: (analysis: ReturnType<typeof analyzeRules>) => void;
+    reject: (error: Error) => void;
+    emit: (progress: AnalysisProgress) => void;
+    cancel: () => void;
+  };
+
+  run(project: RuleProject): CheckOperation {
+    const listeners = new Set<(progress: AnalysisProgress) => void>();
+    const operation: CheckOperation = {
+      promise: new Promise((resolve, reject) => {
+        this.last = {
+          resolve: () => resolve(analyzeRules(project)),
+          reject,
+          emit: (progress) => listeners.forEach((listener) => listener(progress)),
+          cancel: () => reject(new DOMException('规则检查已取消', 'AbortError')),
+        };
+      }),
+      cancel: () => this.last?.cancel(),
+      onProgress: (listener) => { listeners.add(listener); },
+    };
+    return operation;
+  }
+}
+
+const progressAt = (processed: number): AnalysisProgress => ({
+  processed, total: 100, percent: processed, stageLabel: '金额', stageSegment: 1, stageTotal: 2,
+  resumed: processed > 0, truncated: false,
+});
+
+describe('检查进度与取消', () => {
+  beforeEach(() => vi.useFakeTimers());
+
+  it('把 worker 进度写入状态，取消后保留续算提示且不展示旧进度', async () => {
+    const checker = new ControllableChecker();
+    const workspace = new RuleWorkspaceViewModel(new MemoryRepository(), checker);
+    await workspace.start();
+
+    const check = workspace.runCheck();
+    expect(checker.last).toBeTruthy();
+    checker.last?.emit(progressAt(40));
+    expect(workspace.getSnapshot().progress?.processed).toBe(40);
+    expect(workspace.getSnapshot().notice).not.toContain('续');
+
+    workspace.cancelCheck();
+    expect(workspace.getSnapshot().checkStatus).toBe('cancelled');
+    expect(workspace.getSnapshot().progress).toBeNull();
+    expect(workspace.getSnapshot().notice).toContain('40');
+    expect(workspace.getSnapshot().notice).toContain('继续');
+
+    await vi.advanceTimersByTimeAsync(0);
+    await check.catch(() => undefined);
+    workspace.dispose();
+  });
+
+  it('过期请求的进度回调不会覆盖当前状态', async () => {
+    const checker = new ControllableChecker();
+    const workspace = new RuleWorkspaceViewModel(new MemoryRepository(), checker);
+    await workspace.start();
+
+    const first = workspace.runCheck();
+    const stale = checker.last;
+    workspace.cancelCheck();
+    await first.catch(() => undefined);
+    stale?.emit(progressAt(99));
+    expect(workspace.getSnapshot().progress).toBeNull();
+    workspace.dispose();
+  });
+});
+

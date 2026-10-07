@@ -257,6 +257,18 @@ button:disabled { cursor: not-allowed !important; opacity: .5; }
 .spinner { width: 20px; height: 20px; border: 2px solid #dfede4; border-top-color: #4e9c78; border-radius: 50%; animation: spin .75s linear infinite; }
 .loading-analysis .spinner { width: 29px; height: 29px; border-width: 3px; }
 .success-mark { display: grid; place-items: center; width: 21px; height: 21px; margin-left: auto; border-radius: 50%; background: #e9f5ed; color: #4e9770; font-size: 11px; }
+.progress-panel { margin-bottom: 12px; padding: 13px 15px 11px; box-shadow: none; }
+.progress-head { display: flex; align-items: center; gap: 11px; }
+.progress-head .spinner { width: 26px; height: 26px; border-width: 3px; flex: none; }
+.progress-copy { flex: 1; min-width: 0; }
+.progress-copy strong { display: block; color: #52645d; font-size: 9px; }
+.progress-copy p { margin: 4px 0 0; color: #99a6a0; font-size: 8px; }
+.progress-copy b { color: #5f8d72; font-weight: 700; }
+.progress-percent { font: 700 15px/1 Manrope, sans-serif; color: #4e9c78; letter-spacing: -.4px; }
+.progress-track { height: 5px; margin: 11px 0 8px; border-radius: 99px; background: #e8f0eb; overflow: hidden; }
+.progress-track > span { display: block; height: 100%; border-radius: 99px; background: linear-gradient(90deg, #69b089, #4e9c78); transition: width .25s ease; }
+.progress-foot { display: flex; justify-content: space-between; gap: 10px; color: #a7b3ad; font-size: 7px; }
+.cancelled-banner { display: flex; align-items: center; gap: 9px; margin: 0 0 11px; padding: 9px 11px; border: 1px solid #dce5ee; border-radius: 6px; background: #f6f9fc; color: #6b8198; font-size: 9px; }
 .analysis-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-bottom: 11px; }
 .metric-card { position: relative; min-height: 94px; display: flex; flex-direction: column; padding: 12px 13px 11px; box-shadow: 0 3px 12px rgba(35,67,58,.025); }
 .metric-icon { position: absolute; top: 11px; right: 12px; width: 25px; height: 25px; display: grid; place-items: center; border-radius: 7px; background: #f1f7f3; color: #63a17d; font-size: 14px; }
