@@ -3,8 +3,8 @@ import type { RuleWorkspaceViewModel } from '../../viewmodels/workspaceViewModel
 export class InspectionViewModel {
   constructor(private readonly workspace: RuleWorkspaceViewModel) {}
 
-  check(): Promise<void> {
-    return this.workspace.runCheck();
+  check(options?: { resume?: boolean }): Promise<void> {
+    return this.workspace.runCheck(options);
   }
 
   cancel(): void {

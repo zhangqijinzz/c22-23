@@ -253,6 +253,12 @@ button:disabled { cursor: not-allowed !important; opacity: .5; }
 .loading-analysis { display: flex; align-items: center; gap: 11px; min-height: 61px; margin-bottom: 12px; padding: 11px 14px; box-shadow: none; }
 .loading-analysis strong { display: block; color: #52645d; font-size: 9px; }
 .loading-analysis p { margin: 4px 0 0; color: #99a6a0; font-size: 8px; }
+.loading-analysis-body { flex: 1; min-width: 0; }
+.check-progress { margin-top: 8px; }
+.check-progress-track { height: 4px; overflow: hidden; border-radius: 9px; background: #edf1ef; }
+.check-progress-track span { display: block; height: 100%; border-radius: inherit; background: #4e9c78; transition: width .18s ease; }
+.check-progress-meta { display: flex; justify-content: space-between; gap: 10px; margin-top: 5px; color: #82908b; font-size: 8px; }
+.check-progress-position { max-width: 45%; overflow: hidden; color: #9ba8a3; text-overflow: ellipsis; white-space: nowrap; }
 .analysis-orb { width: 30px; height: 30px; display: grid; place-items: center; border-radius: 9px; background: #eaf5ee; color: #4e9976; font-size: 16px; }
 .spinner { width: 20px; height: 20px; border: 2px solid #dfede4; border-top-color: #4e9c78; border-radius: 50%; animation: spin .75s linear infinite; }
 .loading-analysis .spinner { width: 29px; height: 29px; border-width: 3px; }

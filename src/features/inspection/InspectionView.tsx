@@ -8,18 +8,20 @@ export function InspectionView({ state, viewModel, onOpenRule }: InspectionViewP
   const project = state.project;
   const analysis = state.analysis;
   const isChecking = state.checkStatus === 'checking' || state.checkStatus === 'scheduled';
+  const progress = state.checkProgress;
+  const checkpoint = state.checkCheckpoint;
   const rules = project?.rules ?? [];
   const byId = new Map(rules.map((rule) => [rule.id, rule]));
   return (
     <section className="module-page inspection-page">
       <div className="page-heading">
         <div><span className="eyebrow">模块 04 / 完整性验证</span><h1>检查与版本</h1><p>定位冲突、遮蔽与遗漏，再保存或冻结一个可追溯版本。</p></div>
-        <div className="button-row">{isChecking ? <button className="button button-quiet" onClick={() => viewModel.cancel()}>取消检查</button> : <button className="button button-primary" disabled={!rules.length || state.validationIssues.length > 0} onClick={() => void viewModel.check()}><span>⌕</span> 运行一致性检查</button>}</div>
+        <div className="button-row">{isChecking ? <button className="button button-quiet" onClick={() => viewModel.cancel()}>取消检查</button> : <>{checkpoint && <button className="button button-outline" onClick={() => void viewModel.check({ resume: true })}><span>↻</span> 从断点继续{progress ? `（${progress.percent}%）` : ''}</button>}<button className="button button-primary" disabled={!rules.length || state.validationIssues.length > 0} onClick={() => void viewModel.check()}><span>⌕</span> 运行一致性检查</button></>}</div>
       </div>
 
       {state.validationIssues.length > 0 && <div className="validation-banner"><strong>规则暂时无法检查</strong><span>{state.validationIssues[0].message}</span><button className="text-button" onClick={() => state.validationIssues[0].ruleId ? onOpenRule(state.validationIssues[0].ruleId) : undefined}>{state.validationIssues[0].ruleId ? '打开相关规则 →' : '修复项目定义'}</button></div>}
       {state.checkStatus === 'error' && !state.validationIssues.length && <div className="error-banner">检查失败：{state.notice}</div>}
-      {!analysis && !state.validationIssues.length && <div className="loading-analysis card-surface"><div className={isChecking ? 'spinner' : 'analysis-orb'}>{isChecking ? '' : '✳'}</div><div><strong>{isChecking ? '正在分析条件空间' : '准备检查规则集合'}</strong><p>{isChecking ? '计算在独立工作线程中运行，可随时取消。' : '点击“运行一致性检查”查看覆盖与规则关系。'}</p></div>{state.checkStatus === 'success' && <span className="success-mark">✓</span>}</div>}
+      {!analysis && !state.validationIssues.length && <div className="loading-analysis card-surface"><div className={isChecking ? 'spinner' : 'analysis-orb'}>{isChecking ? '' : '✳'}</div><div className="loading-analysis-body"><strong>{isChecking ? '正在分析条件空间' : checkpoint ? '检查已取消，断点已保留' : '准备检查规则集合'}</strong><p>{isChecking ? '计算在独立工作线程中运行，可随时取消；取消后可从断点继续。' : checkpoint ? '点击“从断点继续”接着计算，最终结果与一次跑完完全一致。' : '点击“运行一致性检查”查看覆盖与规则关系。'}</p>{progress && (isChecking || checkpoint) && <div className="check-progress"><div className="check-progress-track"><span style={{ width: `${progress.percent}%` }} /></div><div className="check-progress-meta"><span>{isChecking ? '已分析' : '中断前已分析'} {progress.checkedCases.toLocaleString('zh-CN')} / {progress.plannedCases.toLocaleString('zh-CN')} 个逻辑分区 · {progress.percent}%{progress.truncated ? '（已达枚举上限，结果将截断）' : ''}</span>{project && <span className="check-progress-position">{formatPosition(progress.currentValues, project)}</span>}</div></div>}</div>{state.checkStatus === 'success' && <span className="success-mark">✓</span>}</div>}
       {analysis && <AnalysisPanel analysis={analysis} project={project as RuleProject} byId={byId} onOpenRule={onOpenRule} />}
 
       <section className="versions-section">
@@ -71,6 +73,17 @@ function formatWitness(values: SampleInput, project: RuleProject): string {
     const value = values[field.id];
     return `${field.name} ${typeof value === 'boolean' ? value ? '是' : '否' : value ?? '—'}`;
   }).join(' · ');
+}
+
+function formatPosition(values: SampleInput, project: RuleProject): string {
+  const parts = project.fields
+    .map((field) => {
+      const value = values[field.id];
+      if (value === undefined || value === '') return null;
+      return `${field.name}=${typeof value === 'boolean' ? (value ? '是' : '否') : value}`;
+    })
+    .filter(Boolean);
+  return parts.length ? `当前位置：${parts.join(' · ')}` : '';
 }
 
 function VersionRow({ version, index, current, onContinue, onCopy }: { version: RuleVersion; index: number; current: boolean; onContinue: () => void; onCopy: () => void }) {

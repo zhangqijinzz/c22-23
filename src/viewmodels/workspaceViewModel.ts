@@ -1,4 +1,5 @@
 import { evaluateSample } from '../domain/conditionEvaluator';
+import type { AnalysisCheckpoint, AnalysisProgress } from '../domain/ruleAnalysis';
 import { ruleDomain } from '../domain/ruleDomain';
 import type {
   ModuleId,
@@ -23,6 +24,8 @@ export interface WorkspaceState {
   project: RuleProject | null;
   activeModule: ModuleId;
   checkStatus: CheckStatus;
+  checkProgress: AnalysisProgress | null;
+  checkCheckpoint: AnalysisCheckpoint | null;
   analysis: RuleAnalysis | null;
   validationIssues: ReturnType<typeof ruleDomain.validateProject>;
   sampleEvaluation: SampleEvaluation | null;
@@ -38,7 +41,7 @@ type Checker = Pick<RuleCheckService, 'run'>;
 export class RuleWorkspaceViewModel implements WorkspacePort {
   private state: WorkspaceState = {
     phase: 'loading', persistence: 'idle', workspace: null, project: null,
-    activeModule: 'inspection', checkStatus: 'idle', analysis: null,
+    activeModule: 'inspection', checkStatus: 'idle', checkProgress: null, checkCheckpoint: null, analysis: null,
     validationIssues: [], sampleEvaluation: null, notice: '正在恢复本地规则项目…',
   };
   private readonly listeners = new Set<Listener>();
@@ -111,7 +114,7 @@ export class RuleWorkspaceViewModel implements WorkspacePort {
     if (project) this.commitProject({ ...project, title }, '项目名称已更新', { recheck: false });
   }
 
-  async runCheck(): Promise<void> {
+  async runCheck(options: { resume?: boolean } = {}): Promise<void> {
     const project = this.state.project;
     if (!project) return;
     if (this.checkTimer) clearTimeout(this.checkTimer);
@@ -123,19 +126,39 @@ export class RuleWorkspaceViewModel implements WorkspacePort {
     }
     this.checkOperation?.cancel();
     const revision = ++this.checkRevision;
-    this.publish({ ...this.state, phase: 'checking', checkStatus: 'checking', notice: '正在工作线程中枚举输入空间…' });
+    const resumeFrom = options.resume ? this.state.checkCheckpoint ?? undefined : undefined;
+    this.publish({
+      ...this.state,
+      phase: 'checking',
+      checkStatus: 'checking',
+      checkCheckpoint: options.resume ? this.state.checkCheckpoint : null,
+      checkProgress: options.resume ? this.state.checkProgress : null,
+      notice: resumeFrom ? `正在从断点继续分析（此前已完成 ${this.state.checkProgress?.percent ?? 0}%）…` : '正在工作线程中枚举输入空间…',
+    });
     try {
-      const operation = this.checker.run(project);
+      const operation = this.checker.run(project, {
+        resumeFrom,
+        onProgress: (progress) => {
+          if (revision !== this.checkRevision) return;
+          this.publish({ ...this.state, checkProgress: progress });
+        },
+        onCheckpoint: (checkpoint) => {
+          const current = this.state.project;
+          if (this.state.checkStatus !== 'cancelled') return;
+          if (!current || current.id !== project.id || current.updatedAt !== project.updatedAt) return;
+          this.publish({ ...this.state, checkCheckpoint: checkpoint });
+        },
+      });
       this.checkOperation = operation;
       const analysis = await operation.promise;
       if (revision !== this.checkRevision) return;
       this.checkOperation = undefined;
-      this.publish({ ...this.state, phase: 'ready', checkStatus: 'success', analysis, notice: `检查完成：已分析 ${analysis.checkedCases.toLocaleString('zh-CN')} 个逻辑分区` });
+      this.publish({ ...this.state, phase: 'ready', checkStatus: 'success', analysis, checkProgress: null, checkCheckpoint: null, notice: `检查完成：已分析 ${analysis.checkedCases.toLocaleString('zh-CN')} 个逻辑分区` });
     } catch (error) {
       if (revision !== this.checkRevision) return;
       this.checkOperation = undefined;
       if (error instanceof DOMException && error.name === 'AbortError') {
-        this.publish({ ...this.state, phase: 'editing', checkStatus: 'cancelled', notice: '检查已取消' });
+        this.publish({ ...this.state, phase: 'editing', checkStatus: 'cancelled', notice: '检查已取消，可从断点继续' });
       } else {
         const message = error instanceof Error ? error.message : '规则检查失败';
         this.publish({ ...this.state, phase: 'error', checkStatus: 'error', notice: message });
@@ -147,11 +170,13 @@ export class RuleWorkspaceViewModel implements WorkspacePort {
     if (this.checkTimer) clearTimeout(this.checkTimer);
     this.checkTimer = undefined;
     this.checkRevision += 1;
-    this.checkOperation?.cancel();
+    const operation = this.checkOperation;
     this.checkOperation = undefined;
     if (this.state.checkStatus === 'checking' || this.state.checkStatus === 'scheduled') {
-      this.publish({ ...this.state, phase: 'editing', checkStatus: 'cancelled', notice: '检查已取消' });
+      this.publish({ ...this.state, phase: 'editing', checkStatus: 'cancelled', notice: '检查已取消，可从断点继续' });
     }
+    // 先发布 cancelled 状态再取消操作，确保断点回调能被接收
+    operation?.cancel();
   }
 
   createProject(): void {
@@ -159,7 +184,7 @@ export class RuleWorkspaceViewModel implements WorkspacePort {
     if (!workspace) return;
     const project = createBlankProject(workspace.projects.length + 1);
     const next: WorkspaceDocument = { ...workspace, projects: [...workspace.projects, project], activeProjectId: project.id };
-    this.publish({ ...this.state, workspace: next, project, phase: 'validating', activeModule: 'fields', analysis: null, checkStatus: 'idle', validationIssues: ruleDomain.validateProject(project), sampleEvaluation: evaluateSample(project, project.sampleInputs), selectedRuleId: undefined, notice: '空项目已创建。先定义字段，再添加规则。' });
+    this.publish({ ...this.state, workspace: next, project, phase: 'validating', activeModule: 'fields', analysis: null, checkStatus: 'idle', checkProgress: null, checkCheckpoint: null, validationIssues: ruleDomain.validateProject(project), sampleEvaluation: evaluateSample(project, project.sampleInputs), selectedRuleId: undefined, notice: '空项目已创建。先定义字段，再添加规则。' });
     this.scheduleSave(next);
   }
 
@@ -170,7 +195,7 @@ export class RuleWorkspaceViewModel implements WorkspacePort {
     this.cancelCheck();
     const next = { ...workspace, activeProjectId: projectId };
     const issues = ruleDomain.validateProject(project);
-    this.publish({ ...this.state, workspace: next, project, phase: issues.length ? 'validating' : 'editing', activeModule: 'inspection', checkStatus: issues.length ? 'idle' : 'scheduled', analysis: null, validationIssues: issues, sampleEvaluation: evaluateSample(project, project.sampleInputs), selectedRuleId: project.rules[0]?.id, notice: `已切换到“${project.title}”` });
+    this.publish({ ...this.state, workspace: next, project, phase: issues.length ? 'validating' : 'editing', activeModule: 'inspection', checkStatus: issues.length ? 'idle' : 'scheduled', checkProgress: null, checkCheckpoint: null, analysis: null, validationIssues: issues, sampleEvaluation: evaluateSample(project, project.sampleInputs), selectedRuleId: project.rules[0]?.id, notice: `已切换到“${project.title}”` });
     this.scheduleSave(next);
     if (!issues.length) this.scheduleCheck(80);
   }
@@ -209,7 +234,7 @@ export class RuleWorkspaceViewModel implements WorkspacePort {
     };
     const next = { ...workspace, projects: [...workspace.projects, project], activeProjectId: project.id };
     const issues = ruleDomain.validateProject(project);
-    this.publish({ ...this.state, workspace: next, project, phase: issues.length ? 'validating' : 'editing', activeModule: 'rules', checkStatus: issues.length ? 'idle' : 'scheduled', analysis: null, validationIssues: issues, sampleEvaluation: evaluateSample(project, project.sampleInputs), selectedRuleId: project.rules[0]?.id, notice: `已复制版本到项目“${project.title}”` });
+    this.publish({ ...this.state, workspace: next, project, phase: issues.length ? 'validating' : 'editing', activeModule: 'rules', checkStatus: issues.length ? 'idle' : 'scheduled', checkProgress: null, checkCheckpoint: null, analysis: null, validationIssues: issues, sampleEvaluation: evaluateSample(project, project.sampleInputs), selectedRuleId: project.rules[0]?.id, notice: `已复制版本到项目“${project.title}”` });
     this.scheduleSave(next);
     if (!issues.length) this.scheduleCheck(80);
   }
@@ -246,6 +271,8 @@ export class RuleWorkspaceViewModel implements WorkspacePort {
       ...this.state, workspace: next, project: updated,
       phase: issues.length ? 'validating' : 'editing', validationIssues: issues,
       checkStatus: issues.length ? 'idle' : recheck ? 'scheduled' : this.state.checkStatus,
+      checkProgress: recheck ? null : this.state.checkProgress,
+      checkCheckpoint: null,
       analysis: recheck ? null : this.state.analysis,
       sampleEvaluation: evaluateSample(updated, updated.sampleInputs),
       selectedRuleId: updated.rules.some((rule) => rule.id === this.state.selectedRuleId) ? this.state.selectedRuleId : updated.rules[0]?.id,
